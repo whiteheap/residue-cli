@@ -861,6 +861,16 @@ pub fn space_json(s: &Space) -> Json {
 }
 
 pub fn report_json(r: &Report) -> Json {
+    report_json_owner(r, None)
+}
+
+/// `report_json`, plus `owner` (`codex` or `claude`) for `residue agents`.
+/// Every field before `owner` is the scan object, unchanged.
+pub fn agent_worktree_json(r: &Report, owner: &str) -> Json {
+    report_json_owner(r, Some(owner))
+}
+
+fn report_json_owner(r: &Report, owner: Option<&str>) -> Json {
     let e = &r.entry;
     let (local_commits, local_commits_error) = match &r.local_commits {
         Ok(n) => (Json::opt(*n, Json::UInt), Json::Null),
@@ -877,7 +887,7 @@ pub fn report_json(r: &Report) -> Json {
         Err(err) => (Json::Null, Json::Null, Json::Null, Json::str(err.clone())),
     };
     let (restored, restored_error) = crate::removed::mark_json(&r.restored);
-    Json::Obj(vec![
+    let mut fields = vec![
         ("path", Json::path(&e.path)),
         (
             "canonical_path",
@@ -951,7 +961,11 @@ pub fn report_json(r: &Report) -> Json {
             "cargo_target_dir",
             Json::opt(r.target_dir.as_ref(), target_dir_json),
         ),
-    ])
+    ];
+    if let Some(owner) = owner {
+        fields.push(("owner", Json::str(owner)));
+    }
+    Json::Obj(fields)
 }
 
 // ---------------------------------------------------------------- text

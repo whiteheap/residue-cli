@@ -6,6 +6,7 @@
 compile_error!("residue runs on Unix-like systems only; on Windows, use WSL");
 
 mod activity;
+mod agents;
 mod cli;
 mod commands;
 mod discover;
@@ -59,6 +60,7 @@ fn main() -> ExitCode {
             0
         }
         cli::Command::Scan(options) => commands::scan(&options),
+        cli::Command::Agents(options) => agents::command(&options),
         cli::Command::Explain(options) => commands::explain(&options),
         cli::Command::Remove(options) => remove::remove(&options),
         cli::Command::Restore(options) => restore::command(&options),

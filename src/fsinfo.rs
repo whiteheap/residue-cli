@@ -92,6 +92,9 @@ pub struct Usage {
     /// worktrees removed together.
     pub reclaimable: u64,
     pub entries: u64,
+    /// Non-directory names, each one counted, a symbolic link and each hard
+    /// link included. A directory is not one. `residue agents` reports it.
+    pub files: u64,
     pub newest_mtime: Option<i64>,
     /// The entry with that mtime (the first one seen, on a tie).
     pub newest_path: Option<PathBuf>,
@@ -1186,6 +1189,9 @@ fn account(
     path: &Path,
 ) -> bool {
     usage.entries += 1;
+    if !meta.is_dir() {
+        usage.files += 1;
+    }
     let mtime = meta.mtime();
     if usage.newest_mtime.is_none_or(|m| mtime > m) {
         usage.newest_mtime = Some(mtime);

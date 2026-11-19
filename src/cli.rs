@@ -12,6 +12,7 @@ residue: remove a Git worktree only when nothing in it would be lost.
 Usage:
   residue [scan] [PATH...]      List the linked worktrees under PATH (default .)
   residue explain PATH          Show every check for one worktree
+  residue agents [ROOT...]      Report what Codex and Claude Code keep on disk
   residue remove PATH...        Remove candidates, after you type yes
   residue remove --all PATH...  Remove every candidate under PATH
   residue restore [ENTRY]       List what residue can put back, or put back one
@@ -178,6 +179,7 @@ pub enum Command {
     Help,
     Version,
     Scan(Options),
+    Agents(Options),
     Explain(Options),
     Remove(Options),
     Restore(Options),
@@ -199,7 +201,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         None => return Ok(Command::Scan(Options::default())),
         Some(Some("-h" | "--help" | "help")) => return Ok(Command::Help),
         Some(Some("-V" | "--version" | "version")) => return Ok(Command::Version),
-        Some(Some(word @ ("scan" | "explain" | "remove" | "restore" | "stats"))) => {
+        Some(Some(word @ ("scan" | "agents" | "explain" | "remove" | "restore" | "stats"))) => {
             let word = word.to_string();
             args.next();
             word
@@ -433,6 +435,9 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
             "`residue stats` takes only --json: it reports every repository on this machine".into(),
         );
     }
+    if kind == "agents" && (options.idle.is_some() || !options.regenerable.is_empty()) {
+        return Err("`residue agents` takes only --json and ROOT paths".into());
+    }
     if kind == "restore" && options.to.is_some() && options.paths.is_empty() {
         return Err("--to needs an ENTRY to restore; run `residue restore` to list them".into());
     }
@@ -447,6 +452,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         ),
         "restore" => Ok(Command::Restore(options)),
         "stats" => Ok(Command::Stats(options)),
+        "agents" => Ok(Command::Agents(options)),
         "remove" if options.all && options.paths.is_empty() => Err(
             "`residue remove --all` needs at least one PATH to scan, such as ~/src".into(),
         ),
@@ -462,7 +468,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
 }
 
 /// Every command, for the message a mistyped one gets.
-const COMMANDS: &str = "scan, explain, remove, restore, stats, watch, service";
+const COMMANDS: &str = "scan, agents, explain, remove, restore, stats, watch, service";
 
 /// `residue WORD` with a WORD that is no command scans WORD as a PATH, and
 /// so does the first PATH after options (`residue --json WORD`). A word no
@@ -556,7 +562,7 @@ mod tests {
         let err = not_a_command("clean", none).unwrap_err();
         assert_eq!(
             err,
-            "clean is not a command, and there is no folder named clean here; commands: scan, explain, remove, restore, stats, watch, service"
+            "clean is not a command, and there is no folder named clean here; commands: scan, agents, explain, remove, restore, stats, watch, service"
         );
         // A folder by that name, anything with a slash, an option or an
         // empty word is scanned as before.
@@ -714,6 +720,30 @@ mod tests {
         assert_eq!(
             err(&["restore", "--yes", "--expect", id, "w"]),
             "--yes applies only to `residue remove`"
+        );
+    }
+
+    #[test]
+    fn agents_takes_json_and_roots_only() {
+        let os = |w: &[&str]| w.iter().map(OsString::from).collect::<Vec<_>>();
+        match parse(os(&["agents", "--json", "src"])).unwrap() {
+            Command::Agents(options) => {
+                assert!(options.json);
+                assert_eq!(options.paths, [PathBuf::from("src")]);
+            }
+            _ => panic!("not agents"),
+        }
+        let err = |w: &[&str]| match parse(os(w)) {
+            Err(e) => e,
+            Ok(_) => panic!("{w:?} was accepted"),
+        };
+        assert_eq!(
+            err(&["agents", "--regenerable", "target"]),
+            "`residue agents` takes only --json and ROOT paths"
+        );
+        assert_eq!(
+            err(&["--json", "agents"]),
+            "agents is a command, and goes first: residue agents [OPTIONS]"
         );
     }
 
