@@ -15,6 +15,7 @@
 //! can put the files back with rename(2). A real logged-in session was not
 //! created for that check.
 
+use std::borrow::Cow;
 use std::ffi::{CString, OsStr, OsString};
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, BufRead, IsTerminal, Write};
@@ -580,24 +581,12 @@ fn apply_activity(files: &mut [FilePlan]) {
     }
     let mut blocked = Vec::new();
     for file in files.iter().filter(|f| f.act == Act::Trash) {
-        match snapshot.evidence(&file.path, None) {
-            crate::activity::Evidence::InUse(holders) => {
-                let who = holders
-                    .first()
-                    .map(|(pid, cmd)| format!("{cmd}[{pid}]"))
-                    .unwrap_or_else(|| "a process".into());
+        match file_use(&snapshot, &file.path, file.id.as_ref()) {
+            FileUse::InUse(who) => {
                 blocked.push((file.thread.clone(), format!("in use by {who}")));
             }
-            crate::activity::Evidence::Unknown(unavailable) => {
-                blocked.push((
-                    file.thread.clone(),
-                    format!(
-                        "activity is unknown ({}), so nothing in the run was moved: {}",
-                        unavailable.reason, unavailable.detail
-                    ),
-                ));
-            }
-            crate::activity::Evidence::NotObserved => {}
+            FileUse::Unknown(why) => blocked.push((file.thread.clone(), why)),
+            FileUse::NotObserved => {}
         }
     }
     let run_wide = blocked
@@ -623,6 +612,73 @@ fn apply_activity(files: &mut [FilePlan]) {
             file.act = Act::Skip;
             file.reason = why.clone();
         }
+    }
+}
+
+/// Whether one rollout file is in use. `evidence` walks a directory, and a
+/// file is not one: on FreeBSD that walk fails with `ENOTDIR` and would
+/// keep every file whenever `script` holds an unnamed descriptor.
+enum FileUse {
+    InUse(String),
+    NotObserved,
+    /// The probe cannot show the file is unused. Keeps every file.
+    Unknown(String),
+}
+
+fn file_use(snapshot: &crate::activity::Snapshot, path: &Path, id: Option<&Identity>) -> FileUse {
+    use crate::activity::PATH_LIMIT;
+    let seen = match &snapshot.state {
+        Ok(seen) => seen,
+        Err(unavailable) => {
+            return FileUse::Unknown(format!(
+                "activity is unknown ({}), so nothing in the run was moved: {}",
+                unavailable.reason, unavailable.detail
+            ));
+        }
+    };
+    let spelled = match spell_path(seen, path) {
+        Ok(spelled) => spelled,
+        Err(why) => return FileUse::Unknown(why),
+    };
+    let me = std::process::id();
+    for item in &seen.uses {
+        if item.pid != me && item.path.as_slice() == spelled.as_ref() {
+            return FileUse::InUse(format!("{}[{}]", item.command, item.pid));
+        }
+    }
+    if let Some(id) = id {
+        for held in &seen.unnamed {
+            if held.pid != me && held.file == Some((id.dev, id.ino)) {
+                return FileUse::InUse(format!("{}[{}]", held.command, held.pid));
+            }
+        }
+    }
+    if seen
+        .unnamed
+        .iter()
+        .any(|held| held.pid != me && held.file.is_none())
+    {
+        return FileUse::Unknown(
+            "activity is unknown (unnamed_file), so nothing in the run was moved: a process holds a file the probe could not name or place, so it may be one of these"
+                .into(),
+        );
+    }
+    if path.as_os_str().as_bytes().len() >= PATH_LIMIT {
+        return FileUse::Unknown(format!(
+            "activity is unknown (long_path), so nothing in the run was moved: {} names a path whole only when it is shorter than {PATH_LIMIT} bytes",
+            snapshot.backend
+        ));
+    }
+    FileUse::NotObserved
+}
+
+fn spell_path<'a>(seen: &crate::activity::Seen, path: &'a Path) -> Result<Cow<'a, [u8]>, String> {
+    let raw = path.as_os_str().as_bytes();
+    match seen.spelling {
+        None => Ok(Cow::Borrowed(raw)),
+        Some(spell) => spell(raw).ok_or_else(|| {
+            "activity is unknown (unmatchable_path), so nothing in the run was moved: the probe prints a byte of this path in a form residue has not confirmed".into()
+        }),
     }
 }
 

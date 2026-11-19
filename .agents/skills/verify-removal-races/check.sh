@@ -248,7 +248,7 @@ if ! diff -u "$work/expected" "$work/found.sorted" > "$work/diff"; then
   echo
   echo "The result differs from model/expected (- expected, + found):"
   sed -n '3,$p' "$work/diff" | grep '^[-+]' || true
-  echo "A + line is a new break or a changed path: read it with /statechart and replay it against the code."
+  echo "A + line is a new break or a changed path: read it with pstack's /statechart skill (cursor/plugins; not in this repository) and replay it against the code."
   echo "A - line alone is a known break that no longer happens: a fix, or a model that lost the path."
   failed=1
 fi
