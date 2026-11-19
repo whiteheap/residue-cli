@@ -3598,5 +3598,182 @@ name=target-dir-include
 target_fixture 'include = ["more.toml"]' cargo
 target_explain '$t.state == "not_read" and ($t.config_error | test("include"))'
 
+# 24. residue agents: a read-only report of Codex and Claude Code stores.
+# Synthetic HOME, CODEX_HOME and CLAUDE_CONFIG_DIR. No real sessions.
+# The report exits 0 with stores missing, partial or symlink. It does not
+# follow a link, does not open a write-only rollout, and does not write
+# the stats ledger. A process holding a rollout makes that store in_use,
+# or unknown (partial_probe) where the probe cannot read open files.
+# A linked worktree under $CODEX_HOME/worktrees is the scan object plus owner.
+agents_clear() {
+    unset CODEX_HOME CLAUDE_CONFIG_DIR CLAUDE_CODE_TMPDIR
+}
+ledger_sum() {
+    find "$HOME/Library/Application Support/residue" "$HOME/.local/state/residue" -print 2>/dev/null \
+        | LC_ALL=C sort | cksum
+}
+
+name=agents-report
+codex=$work/agents-codex
+claude=$work/agents-claude
+scratch=$work/agents-scratch
+setup mkdir -p "$codex/sessions/2026/11/01" "$codex/log/kept" "$claude/projects" "$scratch"
+printf 'hello' >"$codex/sessions/2026/11/01/rollout-old.jsonl"
+printf 'newer-bytes' >"$codex/sessions/2026/11/01/rollout-new.jsonl"
+printf 'secret' >"$codex/config.toml"
+printf 'token' >"$codex/auth.json"
+printf '{}' >"$claude/settings.json"
+printf 'secret' >"$claude/.credentials.json"
+outside=$work/agents-outside.bin
+dd if=/dev/zero of="$outside" bs=1000 count=200 >/dev/null 2>&1
+ln -s "$outside" "$codex/log/leap"
+printf 'log' >"$codex/log/kept/a.log"
+printf 'db' >"$codex/state_5.sqlite"
+ln -s "$codex/sessions" "$codex/history.jsonl"
+if [ "$(id -u)" != 0 ]; then
+    setup mkdir -p "$codex/log/blocked"
+    printf 'nope' >"$codex/log/blocked/secret"
+    setup chmod 000 "$codex/log/blocked"
+    setup mkdir -p "$codex/sessions/writeonly"
+    # mode 0200: the report sizes it without a read.
+    (umask 577 && printf 'transcript' >"$codex/sessions/writeonly/rollout-x.jsonl") || exit 2
+fi
+before_ledger=$(ledger_sum)
+export CODEX_HOME=$codex CLAUDE_CONFIG_DIR=$claude CLAUDE_CODE_TMPDIR=$scratch
+run agents --json
+agents_status=$status
+agents_clear
+if [ "$(id -u)" != 0 ]; then
+    setup chmod 755 "$codex/log/blocked"
+fi
+if [ "$(id -u)" = 0 ]; then session_files=2; else session_files=3; fi
+codex_store() { # STORE-NAME
+    jq -c --arg store "$1" '.agents[] | select(.agent=="codex") | .stores[] | select(.store==$store)' "$out"
+}
+if [ "$agents_status" != 0 ]; then fail "agents exit $agents_status, want 0"
+elif ! jq -e '.schema == "residue.agents/v1" and (.agents | length) == 2' "$out" >/dev/null; then
+    fail "stdout is not one residue.agents/v1 document with both agents"
+elif ! jq -e --argjson files "$session_files" '
+    [.agents[] | select(.agent=="codex") | .stores[] | select(.store=="sessions")][0]
+    | .state == "ok" and .files == $files and .apparent_bytes >= 16 and .verified == true
+      and (.source_url | type) == "string"
+' "$out" >/dev/null; then
+    fail "sessions: $(codex_store sessions)"
+elif ! jq -e '
+    [.agents[] | select(.agent=="codex") | .stores[] | select(.store=="history")][0]
+    | .state == "symlink" and .apparent_bytes == null and .link_target != null
+' "$out" >/dev/null; then
+    fail "history link: $(codex_store history)"
+elif ! jq -e '
+    [.agents[] | select(.agent=="codex") | .stores[] | select(.store=="archived_sessions")][0]
+    | .state == "missing" and .files == null and .apparent_bytes == null
+' "$out" >/dev/null; then
+    fail "archived: $(codex_store archived_sessions)"
+elif ! jq -e '
+    [.agents[] | select(.agent=="codex") | .stores[] | select(.store=="state_db")][0]
+    | .state == "ok" and .files == 1 and .apparent_bytes == 2
+' "$out" >/dev/null; then
+    fail "state_db: $(codex_store state_db)"
+elif ! jq -e '
+    [.agents[] | select(.agent=="codex") | .stores[] | select(.store=="logs")][0]
+    | .apparent_bytes != null and .apparent_bytes < 100000
+' "$out" >/dev/null; then
+    fail "logs followed the link: $(codex_store logs)"
+elif [ "$(id -u)" != 0 ] && ! jq -e '
+    [.agents[] | select(.agent=="codex") | .stores[] | select(.store=="logs")][0]
+    | .state == "partial" and (.errors | tostring | contains("blocked"))
+' "$out" >/dev/null; then
+    fail "logs was not partial: $(codex_store logs)"
+elif jq -e '[.agents[].stores[].path, .agents[].stores[].store] | tostring | test("config.toml|auth.json|settings.json|credentials.json|plugins")' "$out" >/dev/null; then
+    fail "a config or credential path is in the report"
+elif [ "$(ledger_sum)" != "$before_ledger" ]; then fail "agents wrote the stats ledger"
+elif [ -s "$err" ]; then fail "stderr is not empty"
+else ok
+fi
+
+name=agents-in-use
+codex=$work/agents-busy-codex
+claude=$work/agents-busy-claude
+setup mkdir -p "$codex/sessions" "$claude"
+rollout=$codex/sessions/rollout-held.jsonl
+printf 'held' >"$rollout"
+(cd "$work" && exec sleep 300 3<"$rollout") >/dev/null 2>&1 &
+holder=$!
+holders="$holders $holder"
+i=0
+while [ "$i" -lt 100 ]; do
+    case $(ps -o comm= -p "$holder" 2>/dev/null) in *sleep) break ;; esac
+    sleep 0.1
+    i=$((i + 1))
+done
+export CODEX_HOME=$codex CLAUDE_CONFIG_DIR=$claude
+run agents --json
+agents_clear
+kill "$holder" 2>/dev/null
+wait "$holder" 2>/dev/null
+if [ "$status" != 0 ]; then fail "agents exit $status, want 0"
+elif [ -n "$partial_probe" ]; then
+    if ! jq -e '.agents[] | select(.agent=="codex") | .stores[] | select(.store=="sessions") | .activity == "unknown" and .activity_reason == "partial_probe"' "$out" >/dev/null; then
+        fail "sessions activity: $(jq -c '.agents[] | select(.agent=="codex") | .stores[] | select(.store=="sessions") | {activity, activity_reason}' "$out")"
+    else ok
+    fi
+elif ! jq -e --argjson pid "$holder" '.agents[] | select(.agent=="codex") | .stores[] | select(.store=="sessions") | .activity == "in_use" and any(.processes[]?; .pid == $pid)' "$out" >/dev/null; then
+    fail "sessions was not in use by sleep[$holder]: $(jq -c '.agents[] | select(.agent=="codex") | .stores[] | select(.store=="sessions") | {activity, processes}' "$out")"
+else ok
+fi
+
+name=agents-worktree
+repo=$work/agents-wt-repo
+codex=$work/agents-wt-codex
+claude=$work/agents-wt-claude
+wt=$codex/worktrees/w
+setup mkdir -p "$claude"
+setup git init -q "$repo"
+setup git -C "$repo" commit --allow-empty -q -m init
+setup git -C "$repo" worktree add -q -b w "$wt"
+printf 'tracked\n' >"$wt/file.txt"
+setup git -C "$wt" add file.txt
+setup git -C "$wt" commit -q -m file
+export CODEX_HOME=$codex CLAUDE_CONFIG_DIR=$claude
+run scan --json "$codex/worktrees"
+scan_status=$status
+cp "$out" "$work/$name.scan" || exit 2
+run agents --json
+agents_status=$status
+agents_clear
+scan_one=$(jq -c '.repositories[].worktrees[] | {path, canonical_path, verdict, size, cargo_target_dir}' "$work/$name.scan")
+agent_one=$(jq -c '.agents[] | select(.agent=="codex") | .worktrees[] | {path, canonical_path, verdict, size, cargo_target_dir}' "$out")
+if [ "$scan_status" != 0 ]; then fail "scan exit $scan_status, want 0"
+elif [ "$agents_status" != 0 ]; then fail "agents exit $agents_status, want 0"
+elif [ -z "$scan_one" ]; then fail "scan found no worktree under the Codex worktree root"
+elif [ "$scan_one" != "$agent_one" ]; then fail "worktree object differs from scan: scan $scan_one agents $agent_one"
+elif ! jq -e '.agents[] | select(.agent=="codex") | .worktrees[0].owner == "codex"' "$out" >/dev/null; then
+    fail "owner is not codex"
+else ok
+fi
+
+name=agents-usage
+run agents --yes
+if [ "$status" != 2 ]; then fail "--yes exit $status, want 2"
+elif [ -s "$out" ]; then fail "--yes wrote stdout"
+else
+    "$bin" --help >"$out" 2>"$err"
+    status=$?
+    if [ "$status" != 0 ]; then fail "help exit $status, want 0"
+    elif ! grep -q 'residue agents' "$out"; then fail "help does not list residue agents"
+    else
+        env -u HOME "$bin" agents --json >"$out" 2>"$err"
+        status=$?
+        if [ "$status" != 1 ]; then fail "HOME unset exit $status, want 1"
+        else
+            HOME=/ "$bin" agents --json >"$out" 2>"$err"
+            status=$?
+            if [ "$status" != 1 ]; then fail "HOME=/ exit $status, want 1"
+            else ok
+            fi
+        fi
+    fi
+fi
+
 echo "contract-check: $passes passed, $failures failed"
 [ "$failures" -eq 0 ]

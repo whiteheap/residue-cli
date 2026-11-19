@@ -142,6 +142,17 @@ residue explain PATH
 
 Replace `PATH` with a linked worktree's path, not a folder inside one, to see every check, and why it passed or failed.
 
+### What coding agents keep
+
+`residue agents` reports the session logs, state and scratch directories Codex and Claude Code keep, and the linked worktrees in an agent's own worktree directory. It deletes nothing. Cursor's worktree directory is not named in Cursor's docs, so it is not in this report.
+
+```sh
+residue agents
+residue agents ~/src
+```
+
+`~/src` is only so a Claude Code worktree inside a repository there is included. Codex's own worktree directory is included either way. Each line is one store, with its size and whether a process has it open, and the cleanup command that agent already has.
+
 | Verdict | Meaning |
 | --- | --- |
 | `candidate` | Every check passed. This is the only verdict removal acts on. It is not a promise that a later change is impossible. |
@@ -352,7 +363,7 @@ A process residue could not read does not count as inspected, and the header say
 - **The last check is not the deletion.** The window from that check to the end of Git's delete is in [Remove a worktree](#remove-a-worktree). A removal record brings back the committed state, not a write made in that window. A sweep uses the trash, so what it takes by mistake stays restorable, every file included, until the purge.
 - **A removal and a restore wait for each other on one machine only.** Each run holds the trash entry or removal record it acts on with flock(2), and so does the Git it starts. A process on another machine that shares the disk does not see that hold. On a filesystem with no flock(2), such as some network mounts, residue removes and restores nothing there and says why ([Removal records](docs/removal.md#removal-records)).
 - **A synced folder syncs the removal.** In a folder that iCloud Drive, Dropbox or OneDrive syncs, a removal deletes the worktree on every device, and the probe cannot see the processes on the other devices. Keep worktrees out of synced folders, or lock them.
-- **residue only handles linked worktrees.** It does not touch package-manager stores, Docker build cache or toolchain caches. Use their own commands, which know what is safe: `pnpm store prune`, `docker builder prune`, `npm cache verify`, `go clean -cache`, `uv cache prune`.
+- **residue deletes only linked worktrees.** `residue agents` reports the directories Codex and Claude Code keep for sessions and scratch, and deletes nothing there. It does not touch package-manager stores, Docker build cache or toolchain caches. Use their own commands, which know what is safe: `pnpm store prune`, `docker builder prune`, `npm cache verify`, `go clean -cache`, `uv cache prune`.
 - **Stale entries are reported, not cleaned.** For a worktree whose directory is gone, residue names what brings the directory back, and no command that clears Git's record of it, since that drops the worktree's HEAD and reflog. `git gc` clears that record on its own, 3 months by default after the worktree's index last changed ([Stale worktrees](docs/removal.md#stale-worktrees)). An orphaned checkout whose repository is gone is listed and left alone.
 - **residue is not a security boundary.** It runs as you, and assumes the other processes running as you are not trying to fool it.
 
