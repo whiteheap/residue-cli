@@ -1,6 +1,6 @@
 ---
 name: verify-removal-races
-description: Model-check every order of steps of `residue remove`, a trash purge, both kinds of `residue restore`, Git's own `git worktree remove` and the user, to show whether any of them can lose a worktree, a commit or a lock. Use before you merge a change to src/remove.rs, src/trash.rs, src/removed.rs or src/restore.rs, to the worktree move, lock, unlock or remove calls in src/git.rs, or to how src/run.rs and src/watch.rs stop a remove run, and when someone asks whether a removal, purge or restore can lose work.
+description: Model-check every order of steps of `residue remove`, a trash purge, both kinds of `residue restore`, Git's own `git worktree remove` and the user, to show whether any of them can lose a worktree, a commit or a lock. Use before you merge a change to src/remove.rs, src/trash.rs, src/removed.rs, src/restore.rs, src/hold.rs or src/process.rs, to the worktree move, lock, unlock or remove calls in src/git.rs, or to how src/run.rs and src/watch.rs stop a remove run, and when someone asks whether a removal, purge or restore can lose work.
 metadata:
   internal: true
 ---
@@ -123,7 +123,7 @@ Sync commit: `6394300`, the commit that fixed #135 to #139 (#147). The model was
 
 ## Read a result
 
-Read every result with `/statechart`: give it `model/Removal.tla`, one of the configs (`model/Remove.cfg`, `model/RemoveOrphan.cfg`, `model/Trash.cfg`), and the view `model/view.mjs`. It tells each break as numbered steps in plain words, such as "restore moves it back to its path", with the worktree's state after each, and draws a chart of a setup that passes. For a mutant or another setup, copy a config and set `Broken`, `Faults`, `Off`, `After`, `Old` or `Late` as in that line of check.sh or `model/mutants`.
+Read every result with pstack's `statechart` skill (`/statechart`, from [cursor/plugins](https://github.com/cursor/plugins); it is not in this repository). Give it `model/Removal.tla`, one of the configs (`model/Remove.cfg`, `model/RemoveOrphan.cfg`, `model/Trash.cfg`), and the view `model/view.mjs`. It tells each break as numbered steps in plain words, such as "restore moves it back to its path", with the worktree's state after each, and draws a chart of a setup that passes. For a mutant or another setup, copy a config and set `Broken`, `Faults`, `Off`, `After`, `Old` or `Late` as in that line of check.sh or `model/mutants`.
 
 In check.sh's output:
 

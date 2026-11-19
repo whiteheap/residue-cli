@@ -13,6 +13,8 @@ Usage:
   residue [scan] [PATH...]      List the linked worktrees under PATH (default .)
   residue explain PATH          Show every check for one worktree
   residue agents [ROOT...]      Report what Codex and Claude Code keep on disk
+  residue agents prune --older-than DURATION
+                                Move old Codex rollouts to the trash
   residue remove PATH...        Remove candidates, after you type yes
   residue remove --all PATH...  Remove every candidate under PATH
   residue restore [ENTRY]       List what residue can put back, or put back one
@@ -25,15 +27,16 @@ Options:
   --json                   Print one JSON document
   --idle DURATION          Keep worktrees changed within it; remove: --trash too
   --all                    remove: every candidate under each PATH
-  --yes                    remove: skip the prompt; only once the task is done
+  --yes                    remove, agents prune: skip the prompt
   --trash                  remove: into the trash; frees nothing until purged
   --no-trash               remove: delete, even with --idle
-  --keep-trash DURATION    remove: purge trash entries older than this (7d);
-                           new entries keep it, and it cannot shorten their own
+  --keep-trash DURATION    remove, agents prune: purge trash older than this
+                           (7d); an entry keeps its own, and it cannot shorten
+  --older-than DURATION    agents prune: required, at least 1d (30d, 12w)
   --keep-removed DURATION  remove: keep removal records at least this long (30d)
-  --as-of TIME             remove: judge ages at TIME, a plan's generated_at
-  --expect PLAN            remove --yes: act only while the plan is PLAN, as
-                           a run without --yes reported it; else exit 4
+  --as-of TIME             remove, agents prune: judge ages at TIME
+  --expect PLAN            remove --yes and agents prune --yes: act only
+                           while the plan is PLAN; else exit 4
   --expect ID              restore ENTRY: only while ENTRY is the entry with
                            this id in `restore --json`; else exit 4
   --removal-reason REASON  remove: watch-landed or watch-low-disk (set by watch)
@@ -131,6 +134,9 @@ pub struct Options {
     pub trash: Option<bool>,
     pub keep_trash: Option<Span>,
     pub keep_removed: Option<Span>,
+    /// `agents prune --older-than DURATION`. Required there, and at least
+    /// one day. No other command reads it.
+    pub older_than: Option<Span>,
     /// `remove --as-of TIME`, in Unix seconds: the time every age the run
     /// judges is measured at, such as the `generated_at` of the plan a
     /// person confirmed.
@@ -180,6 +186,7 @@ pub enum Command {
     Version,
     Scan(Options),
     Agents(Options),
+    AgentsPrune(Options),
     Explain(Options),
     Remove(Options),
     Restore(Options),
@@ -197,7 +204,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
     // No command word first: `scan`, whose first PATH `not_a_command`
     // checks in the loop below, after any options and their values.
     let mut implied = false;
-    let kind = match args.peek().map(|a| a.to_str()) {
+    let mut kind = match args.peek().map(|a| a.to_str()) {
         None => return Ok(Command::Scan(Options::default())),
         Some(Some("-h" | "--help" | "help")) => return Ok(Command::Help),
         Some(Some("-V" | "--version" | "version")) => return Ok(Command::Version),
@@ -212,6 +219,10 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
             "scan".to_string()
         }
     };
+    if kind == "agents" && args.peek().and_then(|arg| arg.to_str()) == Some("prune") {
+        args.next();
+        kind = "agents-prune".to_string();
+    }
     let mut options = Options::default();
     let mut paths_only = false;
     while let Some(arg) = args.next() {
@@ -245,6 +256,21 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
                     }
                     "--no-trash" => {
                         set_trash(&mut options, false)?;
+                        continue;
+                    }
+                    "--older-than" => {
+                        let value = args
+                            .next()
+                            .ok_or("--older-than needs a DURATION (1d, 30d, 12w)")?;
+                        options.older_than = Some(Span::parse(
+                            "--older-than",
+                            &utf8(value, "--older-than DURATION")?,
+                        )?);
+                        continue;
+                    }
+                    _ if text.starts_with("--older-than=") => {
+                        options.older_than =
+                            Some(Span::parse("--older-than", &text["--older-than=".len()..])?);
                         continue;
                     }
                     "--idle" => {
@@ -365,8 +391,8 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         }
         options.paths.push(PathBuf::from(arg));
     }
-    if options.yes && kind != "remove" {
-        return Err("--yes applies only to `residue remove`".into());
+    if options.yes && kind != "remove" && kind != "agents-prune" {
+        return Err("--yes applies only to `residue remove` and `residue agents prune`".into());
     }
     if options.all && kind != "remove" {
         return Err(
@@ -387,8 +413,10 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
                 if value { "--trash" } else { "--no-trash" }
             ));
         }
-        if options.keep_trash.is_some() {
-            return Err("--keep-trash applies only to `residue remove`".into());
+        if options.keep_trash.is_some() && kind != "agents-prune" {
+            return Err(
+                "--keep-trash applies only to `residue remove` and `residue agents prune`".into(),
+            );
         }
         if options.keep_removed.is_some() {
             return Err(
@@ -398,12 +426,14 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         if options.removal_reason.is_some() {
             return Err("--removal-reason applies only to `residue remove`".into());
         }
-        if options.as_of.is_some() {
-            return Err("--as-of applies only to `residue remove`".into());
-        }
-        if options.expect.is_some() && kind != "restore" {
+        if options.as_of.is_some() && kind != "agents-prune" {
             return Err(
-                "--expect applies only to `residue remove --yes`, `residue restore ENTRY` and `residue service install`"
+                "--as-of applies only to `residue remove` and `residue agents prune`".into(),
+            );
+        }
+        if options.expect.is_some() && kind != "restore" && kind != "agents-prune" {
+            return Err(
+                "--expect applies only to `residue remove --yes`, `residue agents prune --yes`, `residue restore ENTRY` and `residue service install`"
                     .into(),
             );
         }
@@ -414,11 +444,14 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
                 .into(),
         );
     }
-    if options.expect.is_some() && kind == "remove" && !options.yes {
+    if options.expect.is_some() && (kind == "remove" || kind == "agents-prune") && !options.yes {
         return Err(
             "--expect needs --yes: it names the plan a run without --yes reported, for the run that acts on it"
                 .into(),
         );
+    }
+    if options.older_than.is_some() && kind != "agents-prune" {
+        return Err("--older-than applies only to `residue agents prune`".into());
     }
     if options.to.is_some() && kind != "restore" {
         return Err("--to applies only to `residue restore ENTRY`".into());
@@ -438,6 +471,37 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
     if kind == "agents" && (options.idle.is_some() || !options.regenerable.is_empty()) {
         return Err("`residue agents` takes only --json and ROOT paths".into());
     }
+    if kind == "agents-prune" {
+        if !options.paths.is_empty()
+            || options.idle.is_some()
+            || !options.regenerable.is_empty()
+            || options.all
+            || options.trash.is_some()
+            || options.keep_removed.is_some()
+            || options.removal_reason.is_some()
+            || options.only_if_upstream_gone
+        {
+            return Err(
+                "`residue agents prune` takes --older-than DURATION, --json, --yes, --as-of TIME, --expect PLAN and --keep-trash DURATION"
+                    .into(),
+            );
+        }
+        match &options.older_than {
+            None => {
+                return Err(
+                    "`residue agents prune` needs --older-than DURATION, at least 1d, such as --older-than 30d"
+                        .into(),
+                );
+            }
+            Some(span) if span.seconds < 86_400 => {
+                return Err(format!(
+                    "--older-than {}: at least 1d; a shorter age is refused",
+                    span.text
+                ));
+            }
+            Some(_) => {}
+        }
+    }
     if kind == "restore" && options.to.is_some() && options.paths.is_empty() {
         return Err("--to needs an ENTRY to restore; run `residue restore` to list them".into());
     }
@@ -453,6 +517,7 @@ pub fn parse(args: Vec<OsString>) -> Result<Command, String> {
         "restore" => Ok(Command::Restore(options)),
         "stats" => Ok(Command::Stats(options)),
         "agents" => Ok(Command::Agents(options)),
+        "agents-prune" => Ok(Command::AgentsPrune(options)),
         "remove" if options.all && options.paths.is_empty() => Err(
             "`residue remove --all` needs at least one PATH to scan, such as ~/src".into(),
         ),
@@ -646,7 +711,7 @@ mod tests {
         for command in ["scan", "explain", "stats"] {
             assert_eq!(
                 err(&[command, "--expect", plan]),
-                "--expect applies only to `residue remove --yes`, `residue restore ENTRY` and `residue service install`",
+                "--expect applies only to `residue remove --yes`, `residue agents prune --yes`, `residue restore ENTRY` and `residue service install`",
                 "{command}"
             );
         }
@@ -719,7 +784,7 @@ mod tests {
         );
         assert_eq!(
             err(&["restore", "--yes", "--expect", id, "w"]),
-            "--yes applies only to `residue remove`"
+            "--yes applies only to `residue remove` and `residue agents prune`"
         );
     }
 

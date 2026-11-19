@@ -40,6 +40,11 @@ enum Pick {
 
 pub fn command(options: &Options) -> u8 {
     let started = output::now();
+    if !options.paths.is_empty() {
+        if let Some(code) = crate::agents_prune::try_restore(options) {
+            return code;
+        }
+    }
     if let Err(e) = git::require_version() {
         return fail(&e);
     }
@@ -62,12 +67,17 @@ pub fn command(options: &Options) -> u8 {
                 clean(&e)
             );
         }
+        let (_, agent_errors) = crate::agents_prune::restore_rows();
         if options.json {
             println!("{}", list_json(&found, started, Shown::List, None).render());
         } else {
             print!("{}", list_text(&found, started, &places));
         }
-        return if found.errors.is_empty() { 0 } else { 1 };
+        return if found.errors.is_empty() && agent_errors.is_empty() {
+            0
+        } else {
+            1
+        };
     };
     let (found, pick) = match look_up(wanted, &places) {
         Ok(chosen) => chosen,
@@ -996,7 +1006,8 @@ fn list_text(found: &Found, started: i64, places: &Places) -> String {
     let style = Style::stdout();
     let now = output::now();
     let mut out = style.dim(&format!("{}\n", header(started)));
-    if found.trash.is_empty() && found.removed.is_empty() {
+    let agent_text = crate::agents_prune::restore_text();
+    if found.trash.is_empty() && found.removed.is_empty() && agent_text.is_empty() {
         out.push_str("\nnothing to restore: the trash is empty and there are no removal records\n");
     }
     let mut repos: Vec<(&Path, &Path)> = Vec::new();
@@ -1034,6 +1045,7 @@ fn list_text(found: &Found, started: i64, places: &Places) -> String {
             });
         }
     }
+    out.push_str(&agent_text);
     if !found.errors.is_empty() {
         out.push_str("\ncould not inspect:\n");
         for e in &found.errors {
@@ -1195,6 +1207,12 @@ fn entry_json(found: &Found, pick: Pick) -> (Vec<Json>, Vec<Json>) {
 /// hold only the entry ENTRY names, when it is not the one expected.
 /// `expect` is the `--expect` ID.
 fn list_json(found: &Found, started: i64, shown: Shown, expect: Option<&str>) -> Json {
+    let (agent_files, agent_errors) = match shown {
+        Shown::List => crate::agents_prune::restore_rows(),
+        Shown::Restored(..) | Shown::Other(..) => (Vec::new(), Vec::new()),
+    };
+    let mut errors: Vec<String> = found.errors.clone();
+    errors.extend(agent_errors);
     let (trash, removed): (Vec<Json>, Vec<Json>) = match shown {
         Shown::List => (
             found.trash.iter().map(trash::item_json).collect(),
@@ -1264,9 +1282,10 @@ fn list_json(found: &Found, started: i64, shown: Shown, expect: Option<&str>) ->
         ("restore", Json::opt(restore, |r| r)),
         ("trash", Json::Arr(trash)),
         ("removed", Json::Arr(removed)),
+        ("agent_files", Json::Arr(agent_files)),
         (
             "errors",
-            Json::Arr(found.errors.iter().map(|e| Json::str(e.clone())).collect()),
+            Json::Arr(errors.iter().map(|e| Json::str(e.clone())).collect()),
         ),
         // Added last, so every field before it keeps its place.
         (

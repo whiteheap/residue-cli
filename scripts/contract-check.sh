@@ -3775,5 +3775,177 @@ else
     fi
 fi
 
+# 25. residue agents prune: old Codex rollouts, and nothing else.
+# Synthetic CODEX_HOME. No real sessions. A partial probe keeps every file.
+agents_prune_clear() {
+    unset CODEX_HOME
+}
+stamp_old() { # PATH
+    touch -t 202001010000 "$1"
+}
+
+name=agents-prune-usage
+run agents prune --json
+if [ "$status" != 2 ]; then fail "missing --older-than exit $status, want 2"
+else
+    run agents prune --older-than 12h --json
+    if [ "$status" != 2 ]; then fail "--older-than 12h exit $status, want 2"
+    else ok
+    fi
+fi
+
+name=agents-prune-plan
+codex=$work/prune-plan
+mkdir -p "$codex/sessions"
+old=$codex/sessions/rollout-2020-01-01T00-00-00-11111111-1111-1111-1111-111111111111.jsonl
+printf old >"$old"
+stamp_old "$old"
+export CODEX_HOME=$codex
+run agents prune --older-than 30d --json
+agents_prune_clear
+if [ -n "$partial_probe" ]; then
+    if [ "$status" != 3 ]; then fail "partial probe exit $status, want 3"
+    elif [ -e "$old" ] && jq -e '.schema == "residue.agents-prune/v1" and (.results[0].result == "skipped") and (.results[0].reason | test("partial_probe"))' "$out" >/dev/null; then ok
+    else fail "partial probe did not keep the rollout: $(jq -c '.results' "$out" 2>/dev/null)"
+    fi
+elif [ "$status" != 3 ]; then fail "plan exit $status, want 3"
+elif [ ! -f "$old" ]; then fail "the plan moved the rollout"
+elif ! jq -e '.schema == "residue.agents-prune/v1" and .results[0].result == "not_attempted" and (.plan | test("^[0-9a-f]{32}$"))' "$out" >/dev/null; then
+    fail "plan document: $(jq -c '{schema,result:.results[0].result,plan}' "$out")"
+else ok
+fi
+
+name=agents-prune-move
+if [ -n "$partial_probe" ]; then
+    skip_partial "$name"
+else
+    codex=$work/prune-move
+    mkdir -p "$codex/sessions/2020/01/01" "$codex/archived_sessions" "$codex/log"
+    old=$codex/sessions/2020/01/01/rollout-2020-01-01T00-00-00-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa.jsonl
+    fresh=$codex/sessions/2020/01/01/rollout-2026-11-19T00-00-00-bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb.jsonl
+    printf old >"$old"
+    printf fresh >"$fresh"
+    stamp_old "$old"
+    printf hist >"$codex/history.jsonl"
+    stamp_old "$codex/history.jsonl"
+    printf db >"$codex/state.sqlite"
+    printf cfg >"$codex/config.toml"
+    printf arc >"$codex/archived_sessions/rollout-2020-01-01T00-00-00-cccccccc-cccc-cccc-cccc-cccccccccccc.jsonl"
+    stamp_old "$codex/archived_sessions/rollout-2020-01-01T00-00-00-cccccccc-cccc-cccc-cccc-cccccccccccc.jsonl"
+    export CODEX_HOME=$codex
+    run agents prune --older-than 30d --json
+    plan=$(jq -r .plan "$out")
+    asof=$(jq -r .as_of "$out")
+    run agents prune --older-than 30d --yes --as-of "$asof" --expect "$plan" --json
+    agents_prune_clear
+    if [ "$status" != 0 ]; then fail "move exit $status, want 0: $(jq -c '.results' "$out" 2>/dev/null)"
+    elif [ -e "$old" ]; then fail "the old rollout is still in sessions"
+    elif [ ! -f "$fresh" ]; then fail "the new rollout was moved"
+    elif [ ! -f "$codex/history.jsonl" ] || [ ! -f "$codex/state.sqlite" ] || [ ! -f "$codex/config.toml" ]; then
+        fail "a file outside sessions was moved"
+    elif [ ! -f "$codex/archived_sessions/rollout-2020-01-01T00-00-00-cccccccc-cccc-cccc-cccc-cccccccccccc.jsonl" ]; then
+        fail "an archived rollout was moved"
+    elif ! jq -e --arg old "$old" '.results[] | select(.path == $old) | .result == "trashed"' "$out" >/dev/null; then
+        fail "old rollout was not trashed: $(jq -c '.results' "$out")"
+    else ok
+    fi
+fi
+
+name=agents-prune-thread
+codex=$work/prune-thread
+mkdir -p "$codex/sessions"
+id=33333333-3333-3333-3333-333333333333
+one=$codex/sessions/rollout-2020-01-01T00-00-00-$id.jsonl
+two=$codex/sessions/rollout-2026-11-19T00-00-00-${id}_2.jsonl
+printf one >"$one"
+printf two >"$two"
+stamp_old "$one"
+export CODEX_HOME=$codex
+run agents prune --older-than 30d --yes --json
+agents_prune_clear
+if [ ! -f "$one" ] || [ ! -f "$two" ]; then fail "a file of a mixed thread was moved"
+elif ! jq -e '[.results[].result] | all(. == "skipped")' "$out" >/dev/null; then
+    fail "mixed thread was not all skipped: $(jq -c '.results' "$out")"
+else ok
+fi
+
+name=agents-prune-expect
+if [ -n "$partial_probe" ]; then
+    skip_partial "$name"
+else
+    codex=$work/prune-expect
+    mkdir -p "$codex/sessions"
+    old=$codex/sessions/rollout-2020-01-01T00-00-00-dddddddd-dddd-dddd-dddd-dddddddddddd.jsonl
+    printf old >"$old"
+    stamp_old "$old"
+    export CODEX_HOME=$codex
+    run agents prune --older-than 30d --json
+    plan=$(jq -r .plan "$out")
+    asof=$(jq -r .as_of "$out")
+    stamp_old "$old"
+    touch -t 202002010000 "$old"
+    run agents prune --older-than 30d --yes --as-of "$asof" --expect "$plan" --json
+    agents_prune_clear
+    if [ "$status" != 4 ]; then fail "stale plan exit $status, want 4"
+    elif [ ! -f "$old" ]; then fail "a stale plan moved the rollout"
+    else ok
+    fi
+fi
+
+name=agents-prune-symlink
+codex=$work/prune-link
+mkdir -p "$codex/sessions"
+target=$work/prune-link-target
+printf secret >"$target"
+ln -s "$target" "$codex/sessions/rollout-link.jsonl"
+export CODEX_HOME=$codex
+run agents prune --older-than 30d --yes --json
+agents_prune_clear
+if [ ! -f "$target" ] || [ "$(cat "$target")" != secret ]; then fail "the link target changed"
+elif ! jq -e '.results[0].result == "refused"' "$out" >/dev/null; then
+    fail "the link was not refused: $(jq -c '.results' "$out")"
+else ok
+fi
+
+name=agents-prune-restore
+if [ -n "$partial_probe" ]; then
+    skip_partial "$name"
+else
+    codex=$work/prune-restore
+    mkdir -p "$codex/sessions"
+    old=$codex/sessions/rollout-2020-01-01T00-00-00-eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee.jsonl
+    printf old >"$old"
+    stamp_old "$old"
+    export CODEX_HOME=$codex
+    run agents prune --older-than 30d --json
+    plan=$(jq -r .plan "$out")
+    asof=$(jq -r .as_of "$out")
+    run agents prune --older-than 30d --yes --as-of "$asof" --expect "$plan" --json
+    run restore --json
+    # Earlier cases leave their own entries in the same home. Pick this file's.
+    rid=$(jq -r --arg p "$old" '[.agent_files[] | select(any(.files[]; .path == $p)) | .id][0] // empty' "$out")
+    entry=$(jq -r --arg p "$old" '[.agent_files[] | select(any(.files[]; .path == $p)) | .entry][0] // empty' "$out")
+    if [ -z "$rid" ] || [ -z "$entry" ]; then
+        agents_prune_clear
+        fail "restore list has no entry for $old: $(jq -c '.agent_files' "$out")"
+    else
+    run restore --expect "$rid" "$entry" --json
+    agents_prune_clear
+    if [ "$status" != 0 ]; then fail "restore exit $status, want 0"
+    elif [ ! -f "$old" ] || [ "$(cat "$old")" != old ]; then fail "the rollout did not come back"
+    elif ! jq -e '.restore.kind == "agent_files" and .restore.files_restored == 1' "$out" >/dev/null; then
+        fail "restore document: $(jq -c '.restore' "$out")"
+    else ok
+    fi
+    fi
+fi
+
+name=agents-prune-watch
+root=$(cd "$(dirname "$0")/.." && pwd)
+if grep -n 'agents_prune' "$root/src/watch.rs" "$root/src/service.rs" >/dev/null; then
+    fail "watch or service names agents prune"
+else ok
+fi
+
 echo "contract-check: $passes passed, $failures failed"
 [ "$failures" -eq 0 ]
