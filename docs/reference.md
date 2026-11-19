@@ -187,6 +187,40 @@ A store's `state` is `ok`, `missing`, `unreadable`, `partial` or `symlink`. `sym
 
 An agent's `link_target` is set when the agent root itself is a symbolic link. `verified` is true and `source_url` is the page that names the store. `errors` and `warnings` at the top are things that are not one store, such as a worktree list residue could not read.
 
+## Prune old Codex session logs
+
+`residue agents prune` moves old Codex rollout files into residue's trash. It is not part of `residue agents`, which stays read-only. It never reads a rollout's contents.
+
+```sh
+residue agents prune --older-than 30d
+residue agents prune --older-than 30d --json
+residue agents prune --older-than 30d --yes --as-of TIME --expect PLAN --json
+```
+
+`--older-than` is required. The duration uses the same units as `--idle` (`30d`, `12w`) and must be at least `1d`. There is no default. `--keep-trash` defaults to `7d`, and an entry keeps the duration it was moved with: a later run cannot purge it sooner. `--as-of` and `--expect` mean what they mean for `remove`.
+
+A file moves only when all of these hold, at the plan and again right before the rename:
+
+- Its path is under `$CODEX_HOME/sessions/`, or `~/.codex/sessions/` when `CODEX_HOME` is unset. The walk does not follow a symbolic link. A rollout that is itself a link is `refused`, and its target is not opened.
+- Its name is `rollout-*.jsonl` or `rollout-*.jsonl.zst`.
+- Every file of its thread is older than `--older-than` at `as_of`. The thread id is the UUID in the name, so `rollout-TIME-UUID.jsonl` and `rollout-TIME-UUID_2.jsonl` move together or not at all. An unreadable mtime keeps the thread.
+- The activity probe sees no process with it open. `unknown`, `partial_probe` and `hidden_processes` keep every file in the run.
+- Its device, inode, size and mtime still match the plan. A change is `skipped`, and the reason names it.
+
+Nothing else moves. `archived_sessions/`, `history.jsonl`, every `*.sqlite`, `log/`, `config.toml`, `auth.json`, Claude Code, Cursor and worktrees are not candidates. `watch` and `service` do not run this command. On a filesystem with no flock(2), and where the probe cannot show that a file is unused, nothing moves. A file on another filesystem than the trash is `refused`: residue does not copy it. Day folders that become empty stay.
+
+The trash is `agent-trash/` beside the stats ledger. The record is written and synced before the first rename. `residue restore` lists these entries as `kind` `agent_files` and puts one back with rename. A path that exists again keeps the trash copy and says so. A later prune purges an entry past its `--keep-trash`, and deletes only a file whose device, inode, size and mtime match the record. Anything else in the entry stays, with a warning.
+
+`residue.agents-prune/v1` has `generated_at`, `as_of`, `older_than`, `older_than_seconds`, `codex_home`, `codex_home_source` (`CODEX_HOME` or `default`), `plan`, `expected_plan`, `results`, `purged`, `errors` and `warnings`. Each result is `{path, thread_id, bytes, last_change, result, reason}`. `result` is `trashed`, `skipped`, `refused`, `failed` or `not_attempted`. `last_change` is `{unix, at}`. `purged` is `{entry, entry_path, result, reason}`.
+
+Exit status: 0 when every file the plan would move did move and every expired entry purged; 3 when at least one did not, or when there is no terminal and no `--yes`; 4 when `--expect` does not match, and nothing was moved or purged; 2 on usage; 1 when HOME is unset or `/`, or the sessions directory cannot be listed.
+
+`plan` is 32 lowercase hex digits over the Codex home, the two durations, and each rollout and purge entry: its path, what the plan does with it, and, for one it would move or purge, its device, inode, size and mtime. A confirm passes that `plan` and the plan's `as_of`.
+
+`residue restore --json` adds `agent_files`: `{kind, entry, entry_path, id, trashed_at, keep, keep_seconds, files, error}`. `files` is `{path, thread_id, bytes}`. `kind` is `agent_files`. After a restore of one, `restore.kind` is `agent_files` and `restore.files_restored` is how many files came back. `id` is the same 32 hex digits as a worktree entry's, over the kind, the directory and the `info` bytes.
+
+A move appends a ledger line with `event` `trashed` and `by` `agents prune`. A purge appends `freed` with the same `by`. A restore appends `restored` with `from` `agent_files`. `residue stats` counts a `by` it does not name as `other`, and the bytes are in the total.
+
 ## Stats
 
 `residue stats` shows how much disk residue has freed on this machine: all time, the last 30 days and the last 7, each split by the command that freed it (`residue remove PATH`, a `remove --all` sweep, `watch`, or a line that does not say), the repositories that freed the most, what went into the trash and what is in it now, and how many worktrees were restored. It reads only its [ledger](#the-ledger) and, for what is in the trash now, the trash folders of the repositories the ledger names. It takes only `--json`, and exits 0, or 1 when it cannot read the ledger; a ledger that does not exist yet is an empty one.

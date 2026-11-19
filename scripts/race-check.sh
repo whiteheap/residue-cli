@@ -267,5 +267,49 @@ setup=make_landed_repo run_case landed-control ':' '^removed .*\.worktrees/w' --
 setup=make_landed_repo run_case landed-upstream-back 'git update-ref refs/remotes/origin/w HEAD' 'skipped .*changed since you confirmed: its upstream origin/w exists in the local refs' --only-if-upstream-gone
 setup=make_landed_repo run_case landed-upstream-back-trash 'git update-ref refs/remotes/origin/w HEAD' 'skipped .*its upstream origin/w exists in the local refs' --only-if-upstream-gone --trash
 
+# Change a planned Codex rollout while the prompt waits. It must stay,
+# with a reason that names the change. On a partial probe there is no
+# candidate and no prompt, so the case is skipped by name.
+prune_race() {
+    name=rollout-mtime
+    if [ -n "$partial_probe" ]; then
+        skip_partial "$name"
+        return
+    fi
+    local codex rollout
+    codex=$work/codex-prune
+    mkdir -p "$codex/sessions"
+    rollout=$codex/sessions/rollout-2020-01-01T00-00-00-66666666-6666-6666-6666-666666666666.jsonl
+    printf old >"$rollout"
+    touch -t 202001010000 "$rollout"
+    export CODEX_HOME=$codex
+    out=$work/$name.out
+    start "$out" agents prune --older-than 30d
+    if ! await_prompt "$out"; then
+        finish
+        unset CODEX_HOME
+        fail "the prompt never appeared (exit $status)"
+        return
+    fi
+    touch -t 202001020000 "$rollout"
+    finish
+    unset CODEX_HOME
+    if [ "$status" != 3 ]; then
+        fail "exit $status, want 3"
+        return
+    fi
+    if ! grep -q 'changed since the plan' "$out"; then
+        fail "no line matching: changed since the plan"
+        return
+    fi
+    if [ ! -f "$rollout" ]; then
+        fail "the rollout was moved"
+        return
+    fi
+    echo "ok   $name"
+    passes=$((passes + 1))
+}
+prune_race
+
 echo "race-check: $passes passed, $failures failed"
 [ "$failures" -eq 0 ]

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.16 (2026-11-19)
+
+`residue agents prune` moves old Codex session logs into the trash, and only those, after a plan you confirm.
+
+- **Old Codex session logs can be moved to the trash** (#233). `residue agents prune --older-than 30d` plans it and asks; `--yes --as-of TIME --expect PLAN` moves only that plan. It moves `$CODEX_HOME/sessions/**/rollout-*.jsonl` and `rollout-*.jsonl.zst`, a whole thread or nothing, and only when every file is older than the duration and no process has one open. It does not call `codex delete`. On 2026-11-19 Codex CLI 0.170.0, given a scratch `CODEX_HOME` and two synthetic rollout files, `codex delete` exited 1 because it reads Codex's sqlite index and left both files. The files go into residue's trash with one rename, and `residue restore` puts an entry back until a later prune purges it. A purge deletes only a file whose device, inode, size and mtime still match the record.
+- **It never touches** archived sessions, `history.jsonl`, any sqlite file, `log/`, `config.toml`, `auth.json`, Claude Code, Cursor, worktrees, `watch` or the service. A missing `--older-than`, or one under `1d`, is a usage error. Without a terminal and without `--yes`, it moves nothing.
+- **For scripts and integrations:** `residue agents prune --json` prints `residue.agents-prune/v1`, with `plan`, `expected_plan`, `as_of`, `older_than` and `results[]` of `{path, thread_id, bytes, last_change, result, reason}`. `result` is `trashed`, `skipped`, `refused`, `failed` or `not_attempted`. `purged[]` lists trash entries. Exit 0 when every file the plan would move did, and every expired entry purged; 3 when one did not; 4 when `--expect` does not match, and nothing moved; 2 on usage; 1 when HOME is unset or the sessions directory cannot be listed. `residue restore --json` adds `agent_files`, entries with `kind` `agent_files`. A ledger line for a move or a purge has `by` `agents prune`; `residue stats` counts that with its other commands. No other command's document changes, except `restore`, which adds `agent_files`.
+
 ## 0.0.15 (2026-11-19)
 
 residue reports what Codex and Claude Code keep on disk, and names a Cargo build folder on another filesystem as unreadable.
