@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## 0.0.15 (2026-11-19)
+
+residue reports what Codex and Claude Code keep on disk, and names a Cargo build folder on another filesystem as unreadable.
 
 - **`residue agents` reports what Codex and Claude Code keep on disk** (#232). One line per store: its size, how many files, the newest change, and whether a process has it open, plus the cleanup command that agent already has. It deletes nothing, and it does not read a transcript. Cursor's worktree directory is not named in Cursor's docs, so it is left out. Linked worktrees under `$CODEX_HOME/worktrees`, and Claude's under a repository you name, are the same objects `scan` reports, with an owner.
 - **A Cargo build folder whose path crosses onto another filesystem is `unreadable`, never `missing`** (#218). residue already refused to look into a folder on another filesystem than the worktree's on a `build.target-dir` path, but it checked a name's filesystem only after it had decided whether that name was a folder and opened it. A file mounted from another filesystem on the path, such as a container's `/etc/hostname`, was taken as no folder, and `explain` said `missing`. residue now refuses each name on the path, and the `CACHEDIR.TAG` or config file at its end, as soon as it looks it up, so it opens and reads nothing on another filesystem, and the detail says `on another filesystem than the worktree's`. On Linux that lookup asks only for the name's type, inode and mount, which NFS and FUSE give from their cache without asking their server. No check, verdict or removal changes.
