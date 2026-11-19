@@ -971,6 +971,13 @@ fn rename_matching(from: &Path, to: &Path, planned: &Identity) -> Result<(), Str
         .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
         .open(parent)
         .map_err(|e| format!("cannot open {}: {e}", parent.display()))?;
+    let dst_dir = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
+        .open(dest_parent)
+        .map_err(|e| format!("cannot open {}: {e}", dest_parent.display()))?;
+    // The identity check is the last step before renameat, so a file swapped
+    // in while the destination directory was opened is refused.
     let now = metadata_at(&src_dir, name).map_err(|e| {
         if e.raw_os_error() == Some(libc::ELOOP) {
             format!("{} is a symbolic link, so it was not moved", from.display())
@@ -985,11 +992,6 @@ fn rename_matching(from: &Path, to: &Path, planned: &Identity) -> Result<(), Str
     if let Some(what) = planned.changed(&got) {
         return Err(format!("changed since the plan: {what}"));
     }
-    let dst_dir = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW)
-        .open(dest_parent)
-        .map_err(|e| format!("cannot open {}: {e}", dest_parent.display()))?;
     renameat(&src_dir, name, &dst_dir, dest_name).map_err(|e| {
         if e.raw_os_error() == Some(libc::EXDEV) {
             format!(
