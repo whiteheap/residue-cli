@@ -3922,8 +3922,13 @@ else
     asof=$(jq -r .as_of "$out")
     run agents prune --older-than 30d --yes --as-of "$asof" --expect "$plan" --json
     run restore --json
-    rid=$(jq -r '.agent_files[0].id' "$out")
-    entry=$(jq -r '.agent_files[0].entry' "$out")
+    # Earlier cases leave their own entries in the same home. Pick this file's.
+    rid=$(jq -r --arg p "$old" '[.agent_files[] | select(any(.files[]; .path == $p)) | .id][0] // empty' "$out")
+    entry=$(jq -r --arg p "$old" '[.agent_files[] | select(any(.files[]; .path == $p)) | .entry][0] // empty' "$out")
+    if [ -z "$rid" ] || [ -z "$entry" ]; then
+        agents_prune_clear
+        fail "restore list has no entry for $old: $(jq -c '.agent_files' "$out")"
+    else
     run restore --expect "$rid" "$entry" --json
     agents_prune_clear
     if [ "$status" != 0 ]; then fail "restore exit $status, want 0"
@@ -3931,6 +3936,7 @@ else
     elif ! jq -e '.restore.kind == "agent_files" and .restore.files_restored == 1' "$out" >/dev/null; then
         fail "restore document: $(jq -c '.restore' "$out")"
     else ok
+    fi
     fi
 fi
 
